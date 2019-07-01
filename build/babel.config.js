@@ -15,4 +15,6 @@ module.exports = api => {
             },
         ]);
     }
+
+    return config;
 };

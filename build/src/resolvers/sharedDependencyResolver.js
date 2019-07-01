@@ -1,4 +1,7 @@
 import semver from 'semver';
+import { intersect } from 'semver-intersect';
+import clone from 'just-clone';
+import ManifestOperators from '../ManifestOperators';
 
 /*
     manifest = {
@@ -45,15 +48,14 @@ import semver from 'semver';
     }
 */
 
-
-/*
-
-Top-level "aliases" that has all the data used to generate concrete assets
-API for Teglon operations like "alias" and "remove"
-
-*/
-
+/**
+ * Alters the manifest to remove redundant versions of external dependencies, adding aliases for
+ * removed redundant assets. Uses the semver requirements of the requiring modules to determine
+ * which concrete versions are redundant to include in the bundle
+ * @param {Manifest} manifest
+ */
 function resolveSharedDependencies(manifest) {
+    manifest = clone(manifest);
     /**
      * Extract a mapping of external dependencies to modules that depend on them:
      * Map([
@@ -62,12 +64,14 @@ function resolveSharedDependencies(manifest) {
      */
     let externalDependencies = new Map();
     for (let [moduleId, moduleMetadata] of Object.entries(manifest.modules)) {
-        for (let [dependencyName, dependencyMetadata] of Object.entries(moduleMetadata.externalDependencies)) {
+        for (let [dependencyName, dependencyMetadata] of Object.entries(
+            moduleMetadata.externalDependencies
+        )) {
             if (!externalDependencies.has(dependencyName)) {
                 externalDependencies.set(dependencyName, []);
             }
 
-            externalDependencies.get(dependencyName).push({ 
+            externalDependencies.get(dependencyName).push({
                 id: moduleId,
                 concreteVersion: dependencyMetadata.concreteVersion,
                 semverRange: dependencyMetadata.semverRange
@@ -75,117 +79,114 @@ function resolveSharedDependencies(manifest) {
         }
     }
 
-    /**
-     * For each external dependency, create a mapping of each available concrete version
-     * to all modules the concrete version is compatible with:
-     * Map([
-     *     ['react', Map([
-     *         ['16.8.1', ['module1', 'module2']]
-     *     ])
-     * ])
-     */
-    let dependencyVersions = new Map();
-    for (let [dependencyName, modules] of externalDependencies.entries()) {
-        let concreteVersions = new Map();
+    for (let [
+        dependencyName,
+        requiringModules
+    ] of externalDependencies.entries()) {
+        manifest = resolveSharedDependency(
+            manifest,
+            dependencyName,
+            requiringModules
+        );
+    }
 
-        // Make a map of concrete version to modules that would be satisfied by that version
-        for (let { concreteVersion } of modules) {
-            if (concreteVersions.has(concreteVersion)) {
+    return manifest;
+}
+
+/**
+ * For a given dependency, solves semver constraints to find redundant versions and
+ * remove them by creating an alias
+ * @param {Manifest} manifest The bundle manifest to update
+ * @param {string} dependencyName The dependency to resolve (e.g. 'react')
+ * @param {Module[]} requiringModules Modules that depend on the dependency
+ */
+function resolveSharedDependency(manifest, dependencyName, requiringModules) {
+    /**
+     * For each concrete version of the external dependency, find a semver range that is valid for every module
+     * which currently uses that concrete version.
+     *
+     * This is a consequence of how aliasing currently works. If two modules were generated at build time
+     * to use the same concrete version of a dependency, and that dependency is aliased to another version
+     * at runtime, the alias will apply to both modules. IOW, when evaluating whether a version can fulfill
+     * a module's semver constraint, we must ensure it will also fulfill the constraints of all other modules
+     * using the same import
+     *
+     * [
+     *     ['16.8.1', '^16.8.0']
+     * ]
+     */
+    let aggregateVersionRanges = new Map();
+    for (let module of requiringModules) {
+        let aggregateRange =
+            aggregateVersionRanges.get(module.concreteVersion) ||
+            module.semverRange;
+
+        aggregateVersionRanges.set(
+            module.concreteVersion,
+            intersect(aggregateRange, module.semverRange)
+        );
+    }
+    aggregateVersionRanges = [...aggregateVersionRanges.entries()];
+
+    /**
+     * Map each available concrete version to all the concrete versions it can
+     * substitute for, based on semver constraints:
+     * Map([
+     *     ['16.8.2', ['16.8.0', '16.8.1', '16.8.2']]
+     * ])
+     *
+     * The map includes only concrete versions that have possible substitutions
+     */
+    let possibleReplacements = new Map();
+    for (let [concreteVersion] of aggregateVersionRanges) {
+        let replaceableVersions = aggregateVersionRanges
+            .filter(([, semverRange]) =>
+                semver.satisfies(concreteVersion, semverRange)
+            )
+            .map(([version]) => version);
+
+        if (replaceableVersions.length > 1) {
+            possibleReplacements.set(concreteVersion, replaceableVersions);
+        }
+    }
+
+    let versionsToUse = smallestVersionSet(possibleReplacements).sort(
+        semver.compare
+    );
+
+    // For each version that can be replaced, remove the version's associated asset
+    // and add a module alias mapping to the manifest's `aliases` collection
+    let alreadyReplaced = new Set();
+    for (let replacingVersion of versionsToUse) {
+        for (let replaceableVersion of possibleReplacements.get(
+            replacingVersion
+        )) {
+            if (
+                replaceableVersion === replacingVersion ||
+                alreadyReplaced.has(replaceableVersion)
+            ) {
                 continue;
             }
 
-            concreteVersions.set(concreteVersion, []);
+            let replacedId = `${dependencyName}@${replaceableVersion}`;
+            let replacingId = `${dependencyName}@${replacingVersion}`;
+            let assetId = replacedId + '.js';
 
-            let compatibleModules = concreteVersions.get(concreteVersion);
+            let moduleAliases = Object.keys(manifest.modules)
+                .filter(moduleId => moduleId.startsWith(replacedId))
+                .map(moduleId => ({
+                    from: moduleId,
+                    to: moduleId.replace(replacedId, replacingId)
+                }));
 
-            for (let module of modules) {
-                if (semver.satisfies(concreteVersion, module.semverRange)) {
-                    compatibleModules.push(module.id);
-                }
-            }
+            manifest = ManifestOperators.alias(manifest, assetId, moduleAliases);
 
-            if (compatibleModules.length > 1) {
-                dependencyVersions.set(dependencyName, concreteVersions);
-            }
+            alreadyReplaced.add(replaceableVersion);
         }
-    }
-
-    for (let [dependencyName, concreteVersions] of dependencyVersions.entries()) {
-        let versionsToUse = smallestVersionSet(concreteVersions).sort(semver.compare);
-
-        let versionsToPrune = new Map(concreteVersions.entries());
-        for (let v of versionsToUse) {
-            versionsToPrune.delete(v);
-        }
-
-        for (let version of versionsToPrune) {
-            let packageIdToRemove = `${dependencyName}@${version}`;
-            let packageIdToAlias = versionsToUse.find(v => semver.satisfies())
-            let packageModules = manifest.assets[packageId + '.js'].modules;
-            let alias = { modules: {} };
-            Object.entries(manifest.modules)
-        }
-
-        // Update modules that use an unneeded concrete version
-        let aliases = new Set();
-        for (let [version, modules] of versionsToPrune.entries()) {
-            modules
-                .map(id => manifest.modules[id])
-                .filter(module => module.externalDependencies[dependencyName].concreteVersion === version)
-                .forEach(module => {
-                    let dependencies = module.externalDependencies[dependencyName].semverRange;
-                    aliases.add(${dependencies.concreteVersion}|)
-                        from: dependencies.concreteVersion,
-                        to: versionsToUse.find(v => semver.satisfies(v, dependencies.semverRange))
-                    }
-                })
-            for (moduleId of modules) {
-                let module = manifest[moduleId];
-                let dependencies = module.externalDependencies[dependencyName];
-
-                if (dependencies.concreteVersion !== concreteVersion) {
-                    continue;
-                }
-
-        //         let prevVersion = dependencies.concreteVersion;
-        //         // Use the highest semver version that's compatible
-        //         dependencies.concreteVersion = versionsToUse.find(v => semver.satisfies(dependencies.semverRange));
-        //         dependencies.alias = { from: prevVersion, to: dependencies.concreteVersion };
-        //     }
-        // }
     }
 
     // Once we've updated to the smallest set of dependencies possible, remove assets that are no longer referenced
-    let assetReferences = new Map();
-    for ([assetId, assetMetadata] of Object.entries(manifest.assets)) {
-        if (!assetReferences.has(assetId)) {
-            assetReferences.set(assetId, 0);
-        }
-        for (let dependencyId of assetMetadata.dependencies) {
-            let refCount = assetReferences.has(dependencyId) ? assetReferences.get(dependencyId) : 0;
-            assetReferences.set(dependencyId, refCount++);
-        }
-    }
-
-    let assetQueue = new Set(assetReferences.keys());
-
-    for (assetId of assetQueue) {
-        let asset = manifest.assets[assetId];
-
-        if (!asset) {
-            continue;
-        }
-
-        if (!asset.isEntry && assetReferences.get(assetId) <= 0) {
-            delete manifest.assets[assetId];
-            for (let dependencyId of asset.dependencies) {
-                assetReferences.set(dependencyId, assetReferences.get(dependencyId) - 1);
-                // Move each decremented dependency to the back of the queue
-                assetQueue.delete(dependencyId);
-                assetQueue.add(dependencyId);
-            }
-        }        
-    }
+    manifest = ManifestOperators.prune(manifest);
 
     return manifest;
 }
@@ -198,28 +199,36 @@ function resolveSharedDependencies(manifest) {
 function smallestVersionSet(versionsMap) {
     let fewest = null;
 
-    let versions = [];
-    let allModules = new Set();
-    for (let [version, modules] of versionsMap.entries()) {
-        versions.push(version);
-        modules.forEach(m => allModules.add(m));
+    let replacementVersions = [];
+    let allReplaceableVersions = new Set();
+    for (let [
+        replacementVersion,
+        replaceableVersions
+    ] of versionsMap.entries()) {
+        replacementVersions.push(replacementVersion);
+        replaceableVersions.forEach(m => allReplaceableVersions.add(m));
     }
 
-    for (let concreteVersionsSubset of subsequences(versions)) {
-        let satisfiedModules = concreteVersionsSubset.reduce((uniqueModules, concreteVersion) => {
-            versionsMap.get(concreteVersion).forEach(m => uniqueModules.add(m));
-            return uniqueModules;
-        }, new Set());
+    for (let subset of subsequences(replacementVersions)) {
+        let satisfiedReplacements = new Set();
+        for (let replacingVersion of subset) {
+            versionsMap
+                .get(replacingVersion)
+                .forEach(m => satisfiedReplacements.add(m));
+        }
 
-        let subsetSatisifiesAllModules = satisfiedModules.count === allModules.count;
+        let subsetSatisifiesAllModules =
+            satisfiedReplacements.size === allReplaceableVersions.size;
 
         if (
-            subsetSatisifiesAllModules && (fewest === null || concreteVersionsSubset.length < fewest.length)
+            subsetSatisifiesAllModules &&
+            (fewest === null || subset.length < fewest.length)
         ) {
-            fewest = concreteVersionsSubset;
-        } 
+            fewest = subset;
+        }
     }
-    return fewest;
+
+    return fewest || [];
 }
 
 /**
@@ -229,11 +238,11 @@ function smallestVersionSet(versionsMap) {
 function* subsequences(sequence) {
     let currentSubsequence = [];
     let subsequencesCount = Math.pow(2, sequence.length);
-    
+
     for (let i = 0; i < subsequencesCount; i++) {
         currentSubsequence = [];
         for (var j = 0; j < sequence.length; j++) {
-            if (i & Math.pow(2, j)) { 
+            if (i & Math.pow(2, j)) {
                 currentSubsequence.push(sequence[j]);
             }
         }
@@ -243,3 +252,4 @@ function* subsequences(sequence) {
     }
 }
 
+export default resolveSharedDependencies;
