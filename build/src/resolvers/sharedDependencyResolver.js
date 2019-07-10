@@ -1,7 +1,7 @@
 import semver from 'semver';
 import { intersect } from 'semver-intersect';
 import clone from 'just-clone';
-import ManifestOperators from '../ManifestOperators';
+import ManifestOperations from '../ManifestOperations';
 
 /*
     manifest = {
@@ -33,64 +33,74 @@ import ManifestOperators from '../ManifestOperators';
             }
         },
         modules: {
-            'module1': {
-                externalDependencies: {
+            'module1': {...},
+            'react@16.8.1/index.js': {...}
+        },
+        sharedDependencies: {
+            modules: {
+                'module1': {
                     react: {
                         concreteVersion: '16.8.1',
                         semverRange: '^16.0.0'
                     }
                 }
-            },
-            'react@16.8.1/index.js': {
-
             }
         }
     }
 */
 
-/**
- * Alters the manifest to remove redundant versions of external dependencies, adding aliases for
- * removed redundant assets. Uses the semver requirements of the requiring modules to determine
- * which concrete versions are redundant to include in the bundle
- * @param {Manifest} manifest
- */
-function resolveSharedDependencies(manifest) {
-    manifest = clone(manifest);
-    /**
-     * Extract a mapping of external dependencies to modules that depend on them:
-     * Map([
-     *     ['react', [{ id: 'module1', concreteVersion: '16.8.1', semverRange: '^16.8.0' }]]
-     * ])
-     */
-    let externalDependencies = new Map();
-    for (let [moduleId, moduleMetadata] of Object.entries(manifest.modules)) {
-        for (let [dependencyName, dependencyMetadata] of Object.entries(
-            moduleMetadata.externalDependencies
-        )) {
-            if (!externalDependencies.has(dependencyName)) {
-                externalDependencies.set(dependencyName, []);
-            }
-
-            externalDependencies.get(dependencyName).push({
-                id: moduleId,
-                concreteVersion: dependencyMetadata.concreteVersion,
-                semverRange: dependencyMetadata.semverRange
-            });
-        }
+class SharedDependencyResolver {
+    key() {
+        return 'sharedDependencies';
     }
 
-    for (let [
-        dependencyName,
-        requiringModules
-    ] of externalDependencies.entries()) {
-        manifest = resolveSharedDependency(
-            manifest,
+    mergeManifest(entryManifests) {
+        return {};
+    }
+    /**
+     * Alters the manifest to remove redundant versions of external dependencies, adding aliases for
+     * removed redundant assets. Uses the semver requirements of the requiring modules to determine
+     * which concrete versions are redundant to include in the bundle
+     * @param {Manifest} manifest
+     */
+    resolve(manifest) {
+        manifest = clone(manifest);
+        /**
+         * Extract a mapping of external dependencies to modules that depend on them:
+         * Map([
+         *     ['react', [{ id: 'module1', concreteVersion: '16.8.1', semverRange: '^16.8.0' }]]
+         * ])
+         */
+        let externalDependencies = new Map();
+        for (let [moduleId, moduleMetadata] of Object.entries(manifest.modules)) {
+            for (let [dependencyName, dependencyMetadata] of Object.entries(
+                moduleMetadata.externalDependencies
+            )) {
+                if (!externalDependencies.has(dependencyName)) {
+                    externalDependencies.set(dependencyName, []);
+                }
+
+                externalDependencies.get(dependencyName).push({
+                    id: moduleId,
+                    concreteVersion: dependencyMetadata.concreteVersion,
+                    semverRange: dependencyMetadata.semverRange
+                });
+            }
+        }
+
+        for (let [
             dependencyName,
             requiringModules
-        );
-    }
+        ] of externalDependencies.entries()) {
+            manifest = resolveSharedDependency(
+                manifest,
+                dependencyName,
+                requiringModules
+            );
+        }
 
-    return manifest;
+        return manifest;
+    }
 }
 
 /**
@@ -179,14 +189,14 @@ function resolveSharedDependency(manifest, dependencyName, requiringModules) {
                     to: moduleId.replace(replacedId, replacingId)
                 }));
 
-            manifest = ManifestOperators.alias(manifest, assetId, moduleAliases);
+            manifest = ManifestOperations.alias(manifest, assetId, moduleAliases);
 
             alreadyReplaced.add(replaceableVersion);
         }
     }
 
     // Once we've updated to the smallest set of dependencies possible, remove assets that are no longer referenced
-    manifest = ManifestOperators.prune(manifest);
+    manifest = ManifestOperations.prune(manifest);
 
     return manifest;
 }
@@ -241,7 +251,7 @@ function* subsequences(sequence) {
 
     for (let i = 0; i < subsequencesCount; i++) {
         currentSubsequence = [];
-        for (var j = 0; j < sequence.length; j++) {
+        for (let j = 0; j < sequence.length; j++) {
             if (i & Math.pow(2, j)) {
                 currentSubsequence.push(sequence[j]);
             }
@@ -252,4 +262,4 @@ function* subsequences(sequence) {
     }
 }
 
-export default resolveSharedDependencies;
+export default SharedDependencyResolver;

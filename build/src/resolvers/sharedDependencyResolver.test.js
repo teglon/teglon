@@ -1,4 +1,4 @@
-import resolveSharedDependencies from './sharedDependencyResolver';
+import SharedDependencyResolver from './SharedDependencyResolver';
 
 test('is a noop if no dependencies overlap', () => {
     let manifest = {
@@ -49,7 +49,7 @@ test('is a noop if no dependencies overlap', () => {
         }
     };
 
-    let actual = resolveSharedDependencies(manifest);
+    let actual = new SharedDependencyResolver().resolve(manifest);
 
     expect(actual).toEqual(manifest);
 });
@@ -103,7 +103,7 @@ test('removes extraneous versions when semver ranges are compatible', () => {
         }
     };
 
-    let actual = resolveSharedDependencies(manifest);
+    let actual = new SharedDependencyResolver().resolve(manifest);
 
     expect(actual.assets).not.toHaveProperty('dep@1.0.0.js');
     expect(actual.aliases).toMatchInlineSnapshot(`
@@ -176,7 +176,7 @@ test('cleans up unused transitive dependencies when unifying versions', () => {
         }
     };
 
-    let actual = resolveSharedDependencies(manifest);
+    let actual = new SharedDependencyResolver().resolve(manifest);
 
     expect(actual).not.toHaveProperty(['assets', 'transitiveDep@1.0.0.js']);
 });
@@ -241,7 +241,7 @@ test("does not remove transitive dependencies of removed assets if they're refer
         }
     };
 
-    let actual = resolveSharedDependencies(manifest);
+    let actual = new SharedDependencyResolver().resolve(manifest);
 
     expect(actual).toHaveProperty(['assets', 'transitiveDep@1.0.0.js']);
 });
@@ -378,7 +378,7 @@ test('uses the smallest set of assets that will satisfy semver constraints of re
         }
     };
 
-    let actual = resolveSharedDependencies(manifest);
+    let actual = new SharedDependencyResolver().resolve(manifest);
 
     let dependencyAssets = Object.keys(actual.assets).filter(x =>
         x.startsWith('dep@')
