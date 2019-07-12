@@ -3697,21 +3697,6 @@ jsprim@^1.2.2:
     json-schema "0.2.3"
     verror "1.10.0"
 
-just-clone@^3.1.0:
-  version "3.1.0"
-  resolved "https://registry.yarnpkg.com/just-clone/-/just-clone-3.1.0.tgz#10efc422e9b041355c43b8076d7b768b7a09fbbd"
-  integrity sha512-sROn15yHaeNYSTG49HmfbQLtsZvMBb2COvVofNXbeUXx6GkERkdjG3dfejD0fe78gdHJLyS+fOz897H73S8LqA==
-
-just-diff-apply@^3.0.0:
-  version "3.0.0"
-  resolved "https://registry.yarnpkg.com/just-diff-apply/-/just-diff-apply-3.0.0.tgz#a77348d24f0694e378b57293dceb65bdf5a91c4f"
-  integrity sha512-K2MLc+ZC2DVxX4V61bIKPeMUUfj1YYZ3h0myhchDXOW1cKoPZMnjIoNCqv9bF2n5Oob1PFxuR2gVJxkxz4e58w==
-
-just-diff@^3.0.0:
-  version "3.0.0"
-  resolved "https://registry.yarnpkg.com/just-diff/-/just-diff-3.0.0.tgz#38f9296c12c1a3610c7011c7e3be857086898525"
-  integrity sha512-ThUgblP80pooeurntumDWB7ITBiBQ05NpCpZkW6QknxClbNV/S2Ommt8meGOmhSQL5tgszu5ETxyub112Ga/0w==
-
 kind-of@^3.0.2, kind-of@^3.0.3, kind-of@^3.2.0:
   version "3.2.2"
   resolved "https://registry.yarnpkg.com/kind-of/-/kind-of-3.2.2.tgz#31ea21a734bab9bbb0f32466d893aea51e4a3c64"

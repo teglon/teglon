@@ -1,6 +1,5 @@
 import semver from 'semver';
 import { intersect } from 'semver-intersect';
-import clone from 'just-clone';
 import ManifestOperations from '../ManifestOperations';
 
 /*
@@ -58,31 +57,30 @@ class SharedDependencyResolver {
         return {};
     }
     /**
-     * Alters the manifest to remove redundant versions of external dependencies, adding aliases for
-     * removed redundant assets. Uses the semver requirements of the requiring modules to determine
-     * which concrete versions are redundant to include in the bundle
-     * @param {Manifest} manifest
+     * Remove redundant versions of external dependencies from the manifest, adding aliases for
+     * removed assets. Uses the semver requirements of the requiring modules to determine
+     * which concrete versions are unneeded
+     * @param {MergedManifest} manifest
      */
     resolve(manifest) {
-        manifest = clone(manifest);
         /**
          * Extract a mapping of external dependencies to modules that depend on them:
          * Map([
-         *     ['react', [{ id: 'module1', concreteVersion: '16.8.1', semverRange: '^16.8.0' }]]
+         *     ['react', [{ id: 'module1', concreteVersions: ['16.8.1'], semverRange: '^16.8.0' }]]
          * ])
          */
         let externalDependencies = new Map();
-        for (let [moduleId, moduleMetadata] of Object.entries(manifest.modules)) {
-            for (let [dependencyName, dependencyMetadata] of Object.entries(
-                moduleMetadata.externalDependencies
-            )) {
+        for (let [moduleId, dependencies] of Object.entries(
+            manifest.sharedDependencies.modules
+        )) {
+            for (let [dependencyName, dependencyMetadata] of Object.entries(dependencies)) {
                 if (!externalDependencies.has(dependencyName)) {
                     externalDependencies.set(dependencyName, []);
                 }
 
                 externalDependencies.get(dependencyName).push({
                     id: moduleId,
-                    concreteVersion: dependencyMetadata.concreteVersion,
+                    concreteVersions: dependencyMetadata.concreteVersions,
                     semverRange: dependencyMetadata.semverRange
                 });
             }
@@ -105,7 +103,7 @@ class SharedDependencyResolver {
 
 /**
  * For a given dependency, solves semver constraints to find redundant versions and
- * remove them by creating an alias
+ * remove them, creating aliases for removed versions
  * @param {Manifest} manifest The bundle manifest to update
  * @param {string} dependencyName The dependency to resolve (e.g. 'react')
  * @param {Module[]} requiringModules Modules that depend on the dependency
@@ -127,14 +125,16 @@ function resolveSharedDependency(manifest, dependencyName, requiringModules) {
      */
     let aggregateVersionRanges = new Map();
     for (let module of requiringModules) {
-        let aggregateRange =
-            aggregateVersionRanges.get(module.concreteVersion) ||
-            module.semverRange;
+        for (let concreteVersion of module.concreteVersions) {
+            let aggregateRange =
+                aggregateVersionRanges.get(concreteVersion) ||
+                module.semverRange;
 
-        aggregateVersionRanges.set(
-            module.concreteVersion,
-            intersect(aggregateRange, module.semverRange)
-        );
+            aggregateVersionRanges.set(
+                concreteVersion,
+                intersect(aggregateRange, module.semverRange)
+            );
+        }
     }
     aggregateVersionRanges = [...aggregateVersionRanges.entries()];
 
@@ -189,7 +189,11 @@ function resolveSharedDependency(manifest, dependencyName, requiringModules) {
                     to: moduleId.replace(replacedId, replacingId)
                 }));
 
-            manifest = ManifestOperations.alias(manifest, assetId, moduleAliases);
+            manifest = ManifestOperations.alias(
+                manifest,
+                assetId,
+                moduleAliases
+            );
 
             alreadyReplaced.add(replaceableVersion);
         }
