@@ -366,3 +366,113 @@ describe('SharedDependencyResolver.resolve', () => {
         expect(dependencyAssets).toEqual(['dep@1.0.2.js', 'dep@1.0.4.js']);
     });
 });
+
+describe('SharedDependencyResolver.mergeManifests', () => {
+    it('merges data under the `sharedDependencies` key to the returned object', () => {
+        let manifest1 = {
+            // standard sections elided
+            sharedDependencies: {
+                modules: {
+                    '5d0dd4': {
+                        dep: {
+                            concreteVersion: '1.0.4',
+                            semverRange: '1.0.3 - 1.0.5'
+                        }
+                    }
+                }
+            }
+        };
+
+        let manifest2 = {
+            // standard sections elided
+            sharedDependencies: {
+                modules: {
+                    '7f3c5b': {
+                        dep: {
+                            concreteVersion: '1.0.5',
+                            semverRange: '1.0.3 - 1.0.6'
+                        }
+                    },
+                }
+            }
+        };
+
+        let resolver = new SharedDependencyResolver();
+        let actual = resolver.mergeManifests([manifest1, manifest2]);
+
+        expect(actual).toEqual({
+            modules: {
+                '5d0dd4': {
+                    dep: {
+                        concreteVersions: ['1.0.4'],
+                        semverRange: '1.0.3 - 1.0.5'
+                    }
+                },
+                '7f3c5b': {
+                    dep: {
+                        concreteVersions: ['1.0.5'],
+                        semverRange: '1.0.3 - 1.0.6'
+                    }
+                }
+            }
+        });
+    });
+
+    it('unions concrete versions if multiple manifests have the same module', () => {
+        let manifest1 = {
+            // standard sections elided
+            sharedDependencies: {
+                modules: {
+                    'react@16.0.0': {
+                        'object-assign': {
+                            concreteVersion: '4.0.1',
+                            semverRange: '^4.0.0'
+                        }
+                    }
+                }
+            }
+        };
+
+        let manifest2 = {
+            // standard sections elided
+            sharedDependencies: {
+                modules: {
+                    'react@16.0.0': {
+                        'object-assign': {
+                            concreteVersion: '4.0.2',
+                            semverRange: '^4.0.0'
+                        }
+                    }
+                }
+            }
+        };
+
+        let manifest3 = {
+            // standard sections elided
+            sharedDependencies: {
+                modules: {
+                    'react@16.0.0': {
+                        'object-assign': {
+                            concreteVersion: '4.0.2',
+                            semverRange: '^4.0.0'
+                        }
+                    }
+                }
+            }
+        };
+
+        let resolver = new SharedDependencyResolver();
+        let actual = resolver.mergeManifests([manifest1, manifest2, manifest3]);
+
+        expect(actual).toEqual({
+            modules: {
+                'react@16.0.0': {
+                    'object-assign': {
+                        concreteVersions: ['4.0.1', '4.0.2'],
+                        semverRange: '^4.0.0'
+                    }
+                }
+            }
+        });
+    });
+});

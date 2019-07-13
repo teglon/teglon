@@ -3,49 +3,50 @@ import { intersect } from 'semver-intersect';
 import ManifestOperations from '../ManifestOperations';
 
 /*
-    manifest = {
-        assets: {
-            'main.js': {
-                isEntry: true,
-                dependencies: [
-                    'react@16.8.1.js'
-                ],
-                modules: [
-                    'module1',
-                    'module2',
-                ]
-            },
-            'react@16.8.1.js': {
-                dependencies: [
-                    'object-assign@4.0.0.js'
-                ],
-                modules: [
-                    'react@16.8.1/index.js'
-                ]
-            }
+Example of the merged manifest data structure
+{
+    assets: {
+        'main.js': {
+            isEntry: true,
+            dependencies: [
+                'react@16.8.1.js'
+            ],
+            modules: [
+                'module1',
+                'module2',
+            ]
         },
-        aliases: {
-            'react@16.8.0.js': {
-                modules: [
-                    { from: 'react@16.8.0/index.js', to: 'react@16.8.1/index.js' }
-                ]
-            }
-        },
+        'react@16.8.1.js': {
+            dependencies: [
+                'object-assign@4.0.0.js'
+            ],
+            modules: [
+                'react@16.8.1/index.js'
+            ]
+        }
+    },
+    aliases: {
+        'react@16.8.0.js': {
+            modules: [
+                { from: 'react@16.8.0/index.js', to: 'react@16.8.1/index.js' }
+            ]
+        }
+    },
+    modules: {
+        'module1': {...},
+        'react@16.8.1/index.js': {...}
+    },
+    sharedDependencies: {
         modules: {
-            'module1': {...},
-            'react@16.8.1/index.js': {...}
-        },
-        sharedDependencies: {
-            modules: {
-                'module1': {
-                    react: {
-                        concreteVersion: '16.8.1',
-                        semverRange: '^16.0.0'
-                    }
+            'module1': {
+                react: {
+                    concreteVersion: '16.8.1',
+                    semverRange: '^16.0.0'
                 }
             }
         }
     }
+}
 */
 
 class SharedDependencyResolver {
@@ -53,9 +54,56 @@ class SharedDependencyResolver {
         return 'sharedDependencies';
     }
 
-    mergeManifest(entryManifests) {
-        return {};
+    /**
+     * Given a collection of manifests produced by independent compilations,
+     * merge data used by this resolver into a single object. The returned object
+     * is assigned to the `sharedDependencies` property of the merged manifest
+     * received by the `resolve` method
+     * @param {Manifest[]} entryManifests 
+     */
+    mergeManifests(entryManifests) {
+        let moduleEntries = entryManifests
+            .filter(manifest => manifest.hasOwnProperty(this.key()))
+            .reduce(
+                (entries, manifest) =>
+                    entries.concat(
+                        Object.entries(manifest[this.key()].modules)
+                    ),
+                []
+            );
+
+        let mergedModules = {};
+        for (let [moduleId, dependencies] of moduleEntries) {
+            if (!mergedModules.hasOwnProperty(moduleId)) {
+                mergedModules[moduleId] = {};
+            }
+
+            for (let [dep, { concreteVersion, ...metadata }] of Object.entries(dependencies)) {
+                /** 
+                 * This condition should only apply to shared modules that have transitive
+                 * dependencies of their own: application module identifiers should be globally
+                 * unique (e.g. id'd by SHA). We therefore assume duplicate module ids are
+                 * the same semver version, and have identical dependency version constraints.
+                 * Only the concrete version might differ, since concrete version determined at
+                 * build time for each compilation separately
+                 */
+                if (mergedModules[moduleId].hasOwnProperty(dep)) {
+                    mergedModules[moduleId][dep].concreteVersions = concatUnique(
+                        mergedModules[moduleId][dep].concreteVersions,
+                        concreteVersion
+                    )
+                } else {
+                    mergedModules[moduleId][dep] = {
+                        ...metadata,
+                        concreteVersions: [concreteVersion]
+                    };
+                }
+            }
+        }
+
+        return { modules: mergedModules };
     }
+
     /**
      * Remove redundant versions of external dependencies from the manifest, adding aliases for
      * removed assets. Uses the semver requirements of the requiring modules to determine
@@ -73,7 +121,9 @@ class SharedDependencyResolver {
         for (let [moduleId, dependencies] of Object.entries(
             manifest.sharedDependencies.modules
         )) {
-            for (let [dependencyName, dependencyMetadata] of Object.entries(dependencies)) {
+            for (let [dependencyName, dependencyMetadata] of Object.entries(
+                dependencies
+            )) {
                 if (!externalDependencies.has(dependencyName)) {
                     externalDependencies.set(dependencyName, []);
                 }
@@ -164,8 +214,10 @@ function resolveSharedDependency(manifest, dependencyName, requiringModules) {
         semver.compare
     );
 
-    // For each version that can be replaced, remove the version's associated asset
-    // and add a module alias mapping to the manifest's `aliases` collection
+    /**
+     * For each version that can be replaced, remove the version's associated asset
+     * and add a module alias mapping to the manifest's `aliases` collection
+     */
     let alreadyReplaced = new Set();
     for (let replacingVersion of versionsToUse) {
         for (let replaceableVersion of possibleReplacements.get(
@@ -264,6 +316,11 @@ function* subsequences(sequence) {
             yield currentSubsequence;
         }
     }
+}
+
+function concatUnique(...arrs) {
+    let merged = arrs.reduce((acc, next) => acc.concat(next), []);
+    return [...new Set(merged)];
 }
 
 export default SharedDependencyResolver;

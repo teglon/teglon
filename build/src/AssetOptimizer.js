@@ -6,7 +6,14 @@ class AssetOptimizer {
     constructor(config = {}) {
         this.resolvers = config.resolvers || [];
         this.fetchAsset = config.fetchAsset;
-        this.manifests = config.manifests;
+        this.manifests = new Map();
+
+        // Given a collection of manifests, create a map where each manifest is
+        // keyed by the asset name of the first entry point.
+        // TODO: does this assumption hold up for child compilations like code split points?
+        for (let manifest of (config.manifests || [])) {
+            this.manifests.set(manifest.entryName, manifest);
+        }
     }
 
     async compileAssets(incomingMessage) {
@@ -14,19 +21,24 @@ class AssetOptimizer {
     }
 
     async compileScript(incomingMessage) {
-        let { assets, aliases } = compileManifest(incomingMessage);
+        let { assets, aliases } = this._compileManifest(incomingMessage);
 
-        // Produce a dependency order graph where each tuple is [dependency, dependent]
+        // Find edges of dependency order graph as a list of tuples [dependency, dependent]
+        // Nodes are tracked so assets without dependencies will be included
         // [
         //   ['object-assign@4.1.1', 'react@16.8.1']
         // ]
-        let graph = Object.entries(assets).reduce((graph, [assetName, metadata]) => (
-            graph.concat(
-                ...metadata.dependencies.map(dep => [dep, assetName])
-            )
-        ), []);
-        
-        let inclusionOrder = sort(graph);
+        let nodes = new Set();
+        let edges = [];
+        for (let [asset, {dependencies}] of Object.entries(assets)) {
+            nodes.add(asset);
+            for (let dependency of dependencies) {
+                nodes.add(dependency);
+                edges.push([dependency, asset]);
+            }
+        }
+
+        let inclusionOrder = sort.array([...nodes], edges);
 
         let scriptBundle = [];
         for await (let asset of inclusionOrder) {
@@ -39,63 +51,67 @@ class AssetOptimizer {
             scriptBundle.push(assetContent);
         }
 
-        return scriptBundle.join('\n');
+        return scriptBundle.join('\n\n');
     }
-}
 
-function constructAliasScript(chunkName, aliasData) {
+    _compileManifest(incomingMessage) {
+        let requestUrl = url.parse(incomingMessage.url, true);
+        let requestedEntries = requestUrl.query.entries.split(',');
+        let mergedManifest = this._createMergedManifest(requestedEntries);
     
-}
+        let context = {
+            url: requestUrl,
+            request: incomingMessage,
+        };
+    
+        return this.resolvers.reduce((manifest, resolver) => (
+            produce(manifest, m => resolver.resolve(m, context))
+        ), mergedManifest);
+    }
 
-function compileManifest(incomingMessage) {
-    let requestUrl = url.parse(incomingMessage.url, true);
-    let entries = requestUrl.query.entries.split(',');
-    let manifest = createMergedManifest(entries);
-
-    let context = {
-        url: requestUrl,
-        request: incomingMessage,
-    };
-
-    return resolvers.reduce((manifest, resolver) => (
-        produce(manifest, m => resolver.resolve(m, context))
-    ), manifest);
-}
-
-function createMergedManifest(entries) {
-    let manifests = entries.map(entry => this.manifests[entry]);
-    let mergedManifest = {
-        aliases: {}
-    };
-
-    for (let manifest of manifests) {
-        // It's possible for the same asset to be present in multiple individual manifests,
-        // and the asset could contain different modules in each separate compilation.
-        // Asset modules and dependencies arrays are unioned during merge
-        for (let [assetName, metadata] of Object.entries(manifest.assets)) {
-            if (mergedManifest.assets.hasOwnProperty(assetName)) {
-                let asset = mergedManifest.assets[assetName];
-                asset.dependencies = concatUnique(asset.dependencies, metadata.dependencies);
-                asset.modules = concatUnique(asset.modules, metadata.modules);
-            } else {
-                mergedManifest.assets[assetName] = metadata;
+    _createMergedManifest(entries) {
+        let manifests = entries.map(entry => this.manifests.get(entry));
+        let mergedManifest = {
+            assets: {},
+            aliases: {},
+            modules: {}
+        };
+    
+        for (let manifest of manifests) {
+            // It's possible for the same asset to be present in multiple individual manifests,
+            // and the asset could contain different modules in each separate compilation.
+            // Asset modules and dependencies arrays are unioned during merge
+            for (let [assetName, metadata] of Object.entries(manifest.assets)) {
+                if (mergedManifest.assets.hasOwnProperty(assetName)) {
+                    let asset = mergedManifest.assets[assetName];
+                    asset.dependencies = concatUnique(asset.dependencies, metadata.dependencies);
+                    asset.modules = concatUnique(asset.modules, metadata.modules);
+                } else {
+                    mergedManifest.assets[assetName] = metadata;
+                }
             }
+            // modules don't currently need any specialized merging
+            Object.assign(mergedManifest.modules, manifest.modules);
         }
-        Object.assign(mergedManifest.modules, manifest.modules);
+    
+        // Each resolver determines how to merge its own data section
+        for (let resolver of this.resolvers) {
+            mergedManifest[resolver.key()] =  resolver.mergeManifests(manifests);
+        }
+    
+        return mergedManifest;
     }
 
-    // Each resolver determines how to merge its own data section
-    for (let resolver of this.resolvers) {
-        mergedManifest[resolver.key()] =  resolver.mergeManifest(manifests);
+    _constructAliasScript(chunkName, aliasData) {
     }
-
-    return mergedManifest;
 }
 
 function concatUnique(...arrs) {
     let merged = arrs.reduce((acc, next) => acc.concat(next), []);
     return [...new Set(merged)];
 }
+
+export default AssetOptimizer;
 
 
 
