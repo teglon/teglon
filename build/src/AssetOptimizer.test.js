@@ -58,4 +58,20 @@ describe('AssetOptimizer.compileScript', () => {
             console.log('Hello from module 2')
         `);
     });
+
+    it('outputs concatenated assets in the correct dependency order', () => {
+
+    });
+
+    it('merges entry manifests using configured resolvers', () => {
+
+    });
+
+    it('runs configured resolvers to alter the merged manifest', () => {
+
+    });
+
+    it('writes modules aliases into the compiled bundle', () => {
+
+    });
 });
