@@ -3,3 +3,5 @@ node_modules/
 dist/
 compilation-stats.json
 records.json
+yarn-debug.log*
+yarn-error.log*
