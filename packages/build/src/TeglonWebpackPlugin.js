@@ -214,18 +214,18 @@ class TeglonWebpackPlugin {
         compiler.hooks.emit.tapPromise(
             'TeglonWebpackPlugin',
             async compilation => {
-                let teglonManifest = {
-                    assets: {},
-                    modules: {},
-                    sharedDependencies: {
-                        modules: {}
-                    }
-                };
-
                 for (let [
                     key,
                     entrypoint
                 ] of compilation.entrypoints.entries()) {
+                    let teglonManifest = {
+                        assets: {},
+                        modules: {},
+                        sharedDependencies: {
+                            modules: {}
+                        }
+                    };
+                    
                     let modules = new Map();
                     for (let chunk of entrypoint.chunks) {
                         for (let assetId of chunk.files) {
@@ -288,6 +288,7 @@ class TeglonWebpackPlugin {
                         ] = {};
                     }
 
+                    console.log('Manifest for', key);
                     console.log(teglonManifest);
                 }
             }

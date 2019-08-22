@@ -1,7 +1,7 @@
 const path = require('path');
 const webpack = require('webpack');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
-const TeglonWebpackPlugin = require('./TeglonWebpackPlugin');
+const TeglonWebpackPlugin = require('@teglon/build/src/TeglonWebpackPlugin');
 
 module.exports = {
     mode: 'none',
