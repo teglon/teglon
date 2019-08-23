@@ -1,25 +1,29 @@
 {
-  "private": true,
-  "name": "@teglon/examples",
-  "version": "1.0.0",
-  "main": "index.js",
-  "license": "MIT",
-  "dependencies": {
-    "object-assign": "3",
-    "react": "^16.8.6",
-    "react-dom": "^16.8.6"
-  },
-  "devDependencies": {
-    "@babel/core": "^7.4.3",
-    "@babel/preset-env": "^7.4.3",
-    "@babel/preset-react": "^7.0.0",
-    "babel-jest": "^24.8.0",
-    "babel-loader": "^8.0.6",
-    "html-webpack-plugin": "^3.2.0",
-    "inspectpack": "^4.2.1",
-    "jest": "^24.8.0",
-    "prettier": "^1.18.2",
-    "webpack": "^4.30.0",
-    "webpack-cli": "^3.3.1"
-  }
+    "private": true,
+    "name": "@teglon/examples",
+    "version": "1.0.0",
+    "main": "index.js",
+    "license": "MIT",
+    "dependencies": {
+        "object-assign": "3",
+        "react": "^16.8.6",
+        "react-dom": "^16.8.6"
+    },
+    "devDependencies": {
+        "@babel/core": "^7.4.3",
+        "@babel/preset-env": "^7.4.3",
+        "@babel/preset-react": "^7.0.0",
+        "babel-jest": "^24.8.0",
+        "babel-loader": "^8.0.6",
+        "html-webpack-plugin": "^3.2.0",
+        "inspectpack": "^4.2.1",
+        "jest": "^24.8.0",
+        "prettier": "^1.18.2",
+        "webpack": "^4.30.0",
+        "webpack-cli": "^3.3.1"
+    },
+    "volta": {
+        "node": "10.16.3",
+        "yarn": "1.17.3"
+    }
 }

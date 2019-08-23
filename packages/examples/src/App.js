@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
-import Button from './Button';
+import * as ButtonModule from './Button';
 import assign from 'object-assign';
+
+const Button = ButtonModule.default;
 
 const App = (props) => {
     const [count, setCount] = useState(0);

@@ -2,31 +2,42 @@ let path = require('path');
 let fs = require('fs').promises;
 let webpack = require('webpack');
 
-let EXTERNAL_MODULE_PATTERN = /[\\/]node_modules[\\/](?!webpack)/;
+let SHARED_MODULE_PATTERN = /[\\/]node_modules[\\/](?!webpack)/;
 
 class TeglonWebpackPlugin {
     constructor(cwd) {
+        /**
+         * [[packageRootPath, packageManifest ]]
+         */
         this.packageMetadata = new Map();
+        /**
+         * [[module, { isPublic }]]
+         */
         this.moduleMetadata = new Map();
         this.cwd = cwd || process.cwd();
     }
 
-    isModuleExternal(module) {
+    /**
+     * Shared modules originate in node_modules
+     * They have the possibility of being deduplicated at runtime
+     * @param {*} module
+     */
+    isModuleShared(module) {
         return (
             module.nameForCondition &&
-            EXTERNAL_MODULE_PATTERN.test(module.nameForCondition())
+            SHARED_MODULE_PATTERN.test(module.nameForCondition())
         );
     }
 
-    isRequiredByOwnPackage(ownPackageName, requiringModule) {
+    areModulesInSamePackage(module1, module2) {
         return (
-            path.basename(this.getPackageRootPath(requiringModule.context)) ===
-            ownPackageName
+            this.getPackageRootPath(module1) ===
+            this.getPackageRootPath(module2)
         );
     }
 
-    getPackageRootPath(modulePath) {
-        modulePath = path.resolve(this.cwd, modulePath);
+    getPackageRootPath(module) {
+        let modulePath = path.resolve(this.cwd, module.context);
 
         while (
             path.basename(path.dirname(modulePath)) !== 'node_modules' &&
@@ -38,9 +49,7 @@ class TeglonWebpackPlugin {
         return modulePath;
     }
 
-    async getPackageManifest(modulePath) {
-        modulePath = path.resolve(this.cwd, modulePath);
-        let packageRootPath = this.getPackageRootPath(modulePath);
+    async getPackageManifest(packageRootPath) {
         let packageManifestPath = path.join(packageRootPath, './package.json');
 
         let packageManifest = null;
@@ -54,6 +63,105 @@ class TeglonWebpackPlugin {
         }
 
         return packageManifest;
+    }
+
+    buildManifestForEntrypoint(entrypoint) {
+        let teglonManifest = {
+            assets: {},
+            modules: {},
+            sharedDependencies: {
+                modules: {}
+            }
+        };
+
+        let chunksByModule = new Map();
+        for (let chunk of entrypoint.chunks) {
+            for (let module of chunk.getModules()) {
+                if (chunksByModule.has(module)) {
+                    chunksByModule.get(module).push(chunk);
+                } else {
+                    chunksByModule.set(module, [chunk]);
+                }
+            }
+        }
+
+        for (let chunk of entrypoint.chunks) {
+            let assetDependencies = new Set();
+            for (let module of chunk.getModules()) {
+
+                /**
+                 * Reserved for future use
+                 */
+                teglonManifest.modules[module.id] = {};
+
+                for (let { module: depModule } of module.dependencies || []) {
+                    if (!depModule) {
+                        continue;
+                    }
+
+                    /**
+                     * Asset 1 depends Asset 2 when Asset 1 contains a module that depends on a module
+                     * contained by Asset 2
+                     *
+                     * When a chunk contains multiple assets (not clear under what circumstances this occurs)
+                     * the assets are treated the same (they are said to contain the same modules, and depend
+                     * on the same assets)
+                     */
+                    let chunkDependencies = chunksByModule.get(depModule);
+                    if (!chunkDependencies.includes(chunk)) {
+                        flatMap(
+                            ...chunkDependencies.map(chunkDep => chunkDep.files)
+                        ).forEach(assetId => assetDependencies.add(assetId));
+                    }
+
+                    /**
+                     * This is where we calculate the concrete version and semver range
+                     * of each shared dependency, for runtime deduplication
+                     */
+                    if (
+                        !this.areModulesInSamePackage(module, depModule) &&
+                        this.isModuleShared(depModule)
+                    ) {
+                        let sharedDependencyEntries =
+                            teglonManifest.sharedDependencies.modules;
+
+                        let {
+                            dependencies,
+                            peerDependencies
+                        } = this.packageMetadata.get(
+                            this.getPackageRootPath(module)
+                        );
+
+                        let { name, version } = this.packageMetadata.get(
+                            this.getPackageRootPath(depModule)
+                        );
+
+                        let semverRange =
+                            dependencies[name] || peerDependencies[name];
+
+                        if (
+                            !sharedDependencyEntries.hasOwnProperty(module.id)
+                        ) {
+                            sharedDependencyEntries[module.id] = {};
+                        }
+
+                        sharedDependencyEntries[module.id][name] = {
+                            concreteVersion: version,
+                            semverRange
+                        };
+                    }
+                }
+            }
+
+            for (let file of chunk.files) {
+                teglonManifest.assets[file] = {
+                    dependencies: [...assetDependencies],
+                    modules: chunk.getModules().map(x => x.id)
+                };
+            }
+        }
+
+        return teglonManifest;
     }
 
     apply(compiler) {
@@ -71,18 +179,20 @@ class TeglonWebpackPlugin {
         compiler.options.optimization.splitChunks.cacheGroups.vendors = {
             ...compiler.options.optimization.splitChunks.cacheGroups.vendors,
             chunks: 'all',
-            test: EXTERNAL_MODULE_PATTERN,
+            test: SHARED_MODULE_PATTERN,
             filename: '[name].js',
             enforce: true,
             name: module => {
-                let packageRootPath = this.getPackageRootPath(module.context);
+                let packageRootPath = this.getPackageRootPath(module);
 
-                if (!this.packageMetadata.has(packageRootPath)) {
+                if (
+                    !this.isModuleShared(module) ||
+                    !this.packageMetadata.has(packageRootPath)
+                ) {
                     return false;
                 }
 
-                let packageManifest = this.packageMetadata.get(packageRootPath)
-                    .packageManifest;
+                let packageManifest = this.packageMetadata.get(packageRootPath);
                 return `${packageManifest.name}@${packageManifest.version}`;
             }
         };
@@ -96,75 +206,44 @@ class TeglonWebpackPlugin {
             compilation.hooks.finishModules.tapPromise(
                 'TeglonWebpackPlugin',
                 async modules => {
-                    let externalModules = modules.filter(module =>
-                        this.isModuleExternal(module)
-                    );
+                    let publicModules = new Set();
 
-                    for await (let module of externalModules) {
-                        if (!this.moduleMetadata.has(module.identifier())) {
-                            this.moduleMetadata.set(module.identifier(), {
-                                isPublic: false
-                            });
+                    for await (let module of modules) {
+                        let packagePath = this.getPackageRootPath(module);
+
+                        if (!this.packageMetadata.has(packagePath)) {
+                            let packageManifest = await this.getPackageManifest(
+                                packagePath
+                            );
+                            this.packageMetadata.set(
+                                packagePath,
+                                packageManifest
+                            );
                         }
 
-                        let packagePath = this.getPackageRootPath(
-                            module.context
-                        );
+                        for (let dependency of module.dependencies || []) {
+                            if (!dependency.module) {
+                                continue;
+                            }
 
-                        if (this.packageMetadata.has(packagePath)) {
-                            continue;
-                        }
-
-                        let packageManifest = await this.getPackageManifest(
-                            module.context
-                        );
-
-                        let requiringPackageManifest = null;
-                        if (module.issuer) {
-                            let requiringModule = module.issuer;
-
-                            // If the module is required directly by the app or another package,
-                            // it's part of its package's public API, and will need metadata to be aliasable
                             if (
-                                !this.isRequiredByOwnPackage(
-                                    packageManifest.name,
-                                    requiringModule
+                                this.isModuleShared(dependency.module) &&
+                                !this.areModulesInSamePackage(
+                                    module,
+                                    dependency.module
                                 )
                             ) {
-                                this.moduleMetadata.get(
-                                    module.identifier()
-                                ).isPublic = true;
-                            }
-
-                            // Walk up the issuer path until the issuer is no longer part of the same package
-                            // as the module itself. Get the semver range the module's package satisfies
-                            while (
-                                this.isRequiredByOwnPackage(
-                                    packageManifest.name,
-                                    requiringModule
-                                )
-                            ) {
-                                requiringModule = requiringModule.issuer;
-                            }
-                            if (requiringModule) {
-                                requiringPackageManifest = await this.getPackageManifest(
-                                    requiringModule.context
-                                );
+                                publicModules.add(dependency.module);
                             }
                         }
 
-                        // let { name: packageName, version: packageVersion } = packageManifest;
-                        // let { name: requirerName, dependencies: requirerDeps } = requiringPackageManifest || {};
-                        // console.log('SETTING METADATA:', {
-                        //     'Key': packagePath,
-                        //     'Package': `${packageName}@${packageVersion}`,
-                        //     'Required by': `${requirerName} (${requirerDeps[packageName]})`
-                        // });
-
-                        this.packageMetadata.set(packagePath, {
-                            packageManifest,
-                            requiringPackageManifest
+                        this.moduleMetadata.set(module, {
+                            isPublic: false
                         });
+                    }
+
+                    for (let publicModule of publicModules) {
+                        this.moduleMetadata.get(publicModule).isPublic = true;
                     }
                 }
             );
@@ -185,21 +264,18 @@ class TeglonWebpackPlugin {
                 'TeglonWebpackPlugin',
                 modules => {
                     for (module of modules) {
-                        let packageRoot = this.getPackageRootPath(
-                            module.context
-                        );
+                        let packageRoot = this.getPackageRootPath(module);
 
                         if (
                             !this.packageMetadata.has(packageRoot) ||
-                            !this.moduleMetadata.get(module.identifier())
-                                .isPublic
+                            !this.moduleMetadata.get(module).isPublic
                         ) {
                             continue;
                         }
 
                         let packageManifest = this.packageMetadata.get(
                             packageRoot
-                        ).packageManifest;
+                        );
                         let packageId = `${packageManifest.name}@${packageManifest.version}`;
                         let moduleId = module
                             .identifier()
@@ -215,90 +291,28 @@ class TeglonWebpackPlugin {
             'TeglonWebpackPlugin',
             async compilation => {
                 for (let [
-                    key,
+                    entrypointName,
                     entrypoint
                 ] of compilation.entrypoints.entries()) {
-                    let teglonManifest = {
-                        assets: {},
-                        modules: {},
-                        sharedDependencies: {
-                            modules: {}
-                        }
-                    };
-                    
-                    let modules = new Map();
-                    for (let chunk of entrypoint.chunks) {
-                        for (let assetId of chunk.files) {
-                            if (
-                                !teglonManifest.assets.hasOwnProperty(assetId)
-                            ) {
-                                teglonManifest.assets[assetId] = {
-                                    dependencies: [],
-                                    modules: []
-                                };
-                            }
-                        }
-
-                        for (let module of chunk.getModules()) {
-                            if (modules.has(module.id)) {
-                                let assets = modules.get(module.id).assets;
-                                chunk.files.forEach(file => assets.add(file));
-                            } else {
-                                modules.set(module.id, {
-                                    moduleDependencies: new Set(
-                                        module.dependencies
-                                            .filter(dep => dep.module)
-                                            .map(dep => dep.module.id)
-                                    ),
-                                    assets: new Set(chunk.files),
-                                    assetDependencies: new Set()
-                                });
-                            }
-                        }
+                    let manifest = this.buildManifestForEntrypoint(entrypoint);
+                    let filePath = path.resolve(compiler.options.output.path, `${entrypointName}.teglon.json`);
+                    try {
+                        await fs.writeFile(filePath, JSON.stringify(manifest, null, 2));
+                    } catch (e) {
+                        compilation.getLogger('TeglonWebpackPlugin').log('Error writing teglon manifest to disk', e);
                     }
-
-                    for (let {
-                        moduleDependencies,
-                        assetDependencies
-                    } of modules.values()) {
-                        for (let dependencyModuleId of moduleDependencies) {
-                            modules
-                                .get(dependencyModuleId)
-                                .assets.forEach(asset =>
-                                    assetDependencies.add(asset)
-                                );
-                        }
-                    }
-
-                    for (let [moduleId, moduleData] of modules.entries()) {
-                        for (let assetId of moduleData.assets) {
-                            let asset = teglonManifest.assets[assetId];
-                            asset.dependencies = concatUnique(
-                                asset.dependencies,
-                                moduleData.assetDependencies
-                            );
-                            asset.modules = concatUnique(asset.modules, [
-                                moduleId
-                            ]);
-                        }
-                        // Not sure what module data we'll need yet
-                        teglonManifest.modules[moduleId] = {};
-                        teglonManifest.sharedDependencies.modules[
-                            moduleId
-                        ] = {};
-                    }
-
-                    console.log('Manifest for', key);
-                    console.log(teglonManifest);
                 }
             }
         );
     }
 }
 
-function concatUnique(...arrs) {
-    let merged = arrs.reduce((acc, next) => acc.concat(next), []);
-    return [...new Set(merged)];
+function flatMap(...arrs) {
+    return arrs.reduce((acc, next) => acc.concat(next), []);
+}
+
+function flatMapDistinct(...arrs) {
+    return [...new Set(flatMap(...arrs))];
 }
 
 module.exports = TeglonWebpackPlugin;
